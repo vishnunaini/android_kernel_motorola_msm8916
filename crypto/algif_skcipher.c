@@ -31,11 +31,6 @@ struct skcipher_sg_list {
 	struct scatterlist sg[0];
 };
 
-struct skcipher_tfm {
-	struct crypto_ablkcipher *skcipher;
-	bool has_key;
-};
-
 struct skcipher_ctx {
 	struct list_head tsgl;
 	struct af_alg_sgl rsgl;
@@ -551,41 +546,17 @@ static struct proto_ops algif_skcipher_ops = {
 
 static void *skcipher_bind(const char *name, u32 type, u32 mask)
 {
-	struct skcipher_tfm *tfm;
-	struct crypto_ablkcipher *skcipher;
-
-	tfm = kzalloc(sizeof(*tfm), GFP_KERNEL);
-	if (!tfm)
-		return ERR_PTR(-ENOMEM);
-
-	skcipher = crypto_alloc_ablkcipher(name, type, mask);
-	if (IS_ERR(skcipher)) {
-		kfree(tfm);
-		return ERR_CAST(skcipher);
-	}
-
-	tfm->skcipher = skcipher;
-
-	return tfm;
+	return crypto_alloc_ablkcipher(name, type, mask);
 }
 
 static void skcipher_release(void *private)
 {
-	struct skcipher_tfm *tfm = private;
-
-	crypto_free_ablkcipher(tfm->skcipher);
-	kfree(tfm);
+	crypto_free_ablkcipher(private);
 }
 
 static int skcipher_setkey(void *private, const u8 *key, unsigned int keylen)
 {
-	struct skcipher_tfm *tfm = private;
-	int err;
-
-	err = crypto_ablkcipher_setkey(tfm->skcipher, key, keylen);
-	tfm->has_key = !err;
-
-	return err;
+	return crypto_ablkcipher_setkey(private, key, keylen);
 }
 
 static void skcipher_sock_destruct(struct sock *sk)
@@ -604,24 +575,20 @@ static int skcipher_accept_parent(void *private, struct sock *sk)
 {
 	struct skcipher_ctx *ctx;
 	struct alg_sock *ask = alg_sk(sk);
-	struct skcipher_tfm *tfm = private;
-	struct crypto_ablkcipher *skcipher = tfm->skcipher;
-	unsigned int len = sizeof(*ctx) + crypto_ablkcipher_reqsize(skcipher);
-
-	if (!tfm->has_key)
-		return -ENOKEY;
+	unsigned int len = sizeof(*ctx) + crypto_ablkcipher_reqsize(private);
 
 	ctx = sock_kmalloc(sk, len, GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
-	ctx->iv = sock_kmalloc(sk, crypto_ablkcipher_ivsize(skcipher),
+
+	ctx->iv = sock_kmalloc(sk, crypto_ablkcipher_ivsize(private),
 			       GFP_KERNEL);
 	if (!ctx->iv) {
 		sock_kfree_s(sk, ctx, len);
 		return -ENOMEM;
 	}
 
-	memset(ctx->iv, 0, crypto_ablkcipher_ivsize(skcipher));
+	memset(ctx->iv, 0, crypto_ablkcipher_ivsize(private));
 
 	INIT_LIST_HEAD(&ctx->tsgl);
 	ctx->len = len;
@@ -633,9 +600,9 @@ static int skcipher_accept_parent(void *private, struct sock *sk)
 
 	ask->private = ctx;
 
-	ablkcipher_request_set_tfm(&ctx->req, skcipher);
+	ablkcipher_request_set_tfm(&ctx->req, private);
 	ablkcipher_request_set_callback(&ctx->req, CRYPTO_TFM_REQ_MAY_BACKLOG,
-				      af_alg_complete, &ctx->completion);
+					af_alg_complete, &ctx->completion);
 
 	sk->sk_destruct = skcipher_sock_destruct;
 
