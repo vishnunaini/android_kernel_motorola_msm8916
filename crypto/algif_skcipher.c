@@ -551,23 +551,22 @@ static struct proto_ops algif_skcipher_ops = {
 
 static int skcipher_check_key(struct socket *sock)
 {
-	int err = 0;
+	int err;
 	struct sock *psk;
 	struct alg_sock *pask;
 	struct skcipher_tfm *tfm;
 	struct sock *sk = sock->sk;
 	struct alg_sock *ask = alg_sk(sk);
 
-	lock_sock(sk);
 	if (ask->refcnt)
-		goto unlock_child;
+		return 0;
 
 	psk = ask->parent;
 	pask = alg_sk(ask->parent);
 	tfm = pask->private;
 
 	err = -ENOKEY;
-	lock_sock_nested(psk, SINGLE_DEPTH_NESTING);
+	lock_sock(psk);
 	if (!tfm->has_key)
 		goto unlock;
 
@@ -581,8 +580,6 @@ static int skcipher_check_key(struct socket *sock)
 
 unlock:
 	release_sock(psk);
-unlock_child:
-	release_sock(sk);
 
 	return err;
 }
