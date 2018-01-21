@@ -852,7 +852,7 @@ static int epl_run_ps_calibration(struct epl_sensor_priv *epl_data)
 	if (ch1 > PS_MAX_XTALK) {
 		LOG_ERR("[%s]:Failed: ch1 > max_xtalk(%d) \r\n", __func__, ch1);
 		return -EINVAL;
-	} else if (ch1 < 0) {
+	} else if (ch1 == 0) {
 		LOG_ERR("[%s]:Failed: ch1 = 0\r\n", __func__);
 		return -EINVAL;
 	}
@@ -1395,14 +1395,15 @@ static void epl_sensor_do_ps_auto_k_one(bool ps_far_k_flag)
 		epl_sensor_read_ps(epld->client);
 #endif
 		if (epl_sensor.ps.data.data < epld->dt_ps_max_ct &&
-				(epl_sensor.ps.saturation == 0)
-				&& (epl_sensor.ps.data.ir_data < PS_MAX_IR)) {
+				epl_sensor.ps.data.data != 0 &&
+				(epl_sensor.ps.saturation == 0) &&
+				(epl_sensor.ps.data.ir_data < PS_MAX_IR)) {
 			LOG_INFO("[%s]: epl_sensor.ps.data.data=%d \r\n", __func__, epl_sensor.ps.data.data);
 			if (enable_ps_flag == true) {
 				if (low_cross_talk < epl_sensor.ps.data.data)
 					epl_sensor.ps.data.data =
 						low_cross_talk;
-				else
+				else if (epl_sensor.ps.data.data > 50)
 					low_cross_talk =
 						epl_sensor.ps.data.data;
 			}
@@ -1713,8 +1714,8 @@ static void epl_sensor_eint_work(struct work_struct *work)
 
 	epl_sensor_read_ps(epld->client);
 	epl_sensor_read_als(epld->client);
-	mutex_lock(&sensor_mutex);
 	if (epl_sensor.ps.interrupt_flag == EPL_INT_TRIGGER) {
+		mutex_lock(&sensor_mutex);
 		if (enable_stowed_flag && enable_ps_flag == false) {
 			epl_sensor_I2C_Write(epld->client, 0x00,
 				EPL_WAIT_200_MS | epl_sensor.mode);
@@ -1728,7 +1729,8 @@ static void epl_sensor_eint_work(struct work_struct *work)
 					epl_sensor.ps.interrupt_type);
 			} else {
 				epl_sensor_I2C_Write(epld->client, 0x04,
-			epl_sensor.ps.rs | ps_stowed_adc | ps_stowed_cycle);
+					epl_sensor.ps.rs | ps_stowed_adc |
+					ps_stowed_cycle);
 				epl_sensor_I2C_Write(epld->client, 0x06,
 					epl_sensor.interrupt_control |
 					ps_stowed_persist |
@@ -1748,6 +1750,9 @@ static void epl_sensor_eint_work(struct work_struct *work)
 						EPL_CMP_RESET | EPL_UN_LOCK);
 				} else  {
 					ps_status_moto = 1;
+					epl_sensor_I2C_Write(epld->client,
+						0x1b,
+						EPL_CMP_RESET | EPL_UN_LOCK);
 				}
 			} else {
 				ps_status_moto = 100;
@@ -1756,26 +1761,31 @@ static void epl_sensor_eint_work(struct work_struct *work)
 					EPL_CMP_RESET | EPL_UN_LOCK);
 			}
 		}
+		mutex_unlock(&sensor_mutex);
+
 		if (enable_ps) {
-			wake_lock_timeout(&ps_lock, 2*HZ);
+			wake_lock_timeout(&ps_lock, msecs_to_jiffies(100));
 			epl_sensor_report_ps_status();
 		}
 		/* PS unlock interrupt pin and restart chip */
+		mutex_lock(&sensor_mutex);
 		epl_sensor_I2C_Write(epld->client, 0x1b, EPL_CMP_RUN | EPL_UN_LOCK);
+		mutex_unlock(&sensor_mutex);
 	}
 
 	if (epl_sensor.als.interrupt_flag == EPL_INT_TRIGGER) {
 		epl_sensor_intr_als_report_lux();
 		/* ALS unlock interrupt pin and restart chip */
+		mutex_lock(&sensor_mutex);
 		epl_sensor_I2C_Write(epld->client, 0x12, EPL_CMP_RUN | EPL_UN_LOCK);
+		mutex_unlock(&sensor_mutex);
 	}
-	mutex_unlock(&sensor_mutex);
 	if (enable_stowed_flag == false) {
 		if ((epl_sensor.ps.compare_low >> 3) == 0) {
 			if (read_h_thd == ps_thd_3cm) {
 				set_psensor_intr_threshold(ps_thd_5cm,
 					ps_thd_1cm);
-			} else if (read_h_thd == ps_thd_1cm) {
+			} else {
 				set_psensor_intr_threshold(ps_thd_5cm,
 					ps_thd_3cm);
 			}

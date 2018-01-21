@@ -55,6 +55,7 @@ size_t get_cal_info_size(int32_t cal_type)
 		size = sizeof(struct audio_cal_info_adm_top);
 		break;
 	case ADM_CUST_TOPOLOGY_CAL_TYPE:
+	case CORE_CUSTOM_TOPOLOGIES_CAL_TYPE:
 		size = 0;
 		break;
 	case ADM_AUDPROC_CAL_TYPE:
@@ -92,6 +93,12 @@ size_t get_cal_info_size(int32_t cal_type)
 		break;
 	case AFE_SIDETONE_CAL_TYPE:
 		size = sizeof(struct audio_cal_info_sidetone);
+		break;
+	case LSM_CUST_TOPOLOGY_CAL_TYPE:
+		size = 0;
+		break;
+	case LSM_TOPOLOGY_CAL_TYPE:
+		size = sizeof(struct audio_cal_info_lsm_top);
 		break;
 	case LSM_CAL_TYPE:
 		size = sizeof(struct audio_cal_info_lsm);
@@ -167,6 +174,7 @@ size_t get_user_cal_type_size(int32_t cal_type)
 		size = sizeof(struct audio_cal_type_adm_top);
 		break;
 	case ADM_CUST_TOPOLOGY_CAL_TYPE:
+	case CORE_CUSTOM_TOPOLOGIES_CAL_TYPE:
 		size = sizeof(struct audio_cal_type_basic);
 		break;
 	case ADM_AUDPROC_CAL_TYPE:
@@ -204,6 +212,12 @@ size_t get_user_cal_type_size(int32_t cal_type)
 		break;
 	case AFE_SIDETONE_CAL_TYPE:
 		size = sizeof(struct audio_cal_type_sidetone);
+		break;
+	case LSM_CUST_TOPOLOGY_CAL_TYPE:
+		size = sizeof(struct audio_cal_type_basic);
+		break;
+	case LSM_TOPOLOGY_CAL_TYPE:
+		size = sizeof(struct audio_cal_type_lsm_top);
 		break;
 	case LSM_CAL_TYPE:
 		size = sizeof(struct audio_cal_type_lsm);
@@ -577,7 +591,9 @@ done:
 	return cal_block;
 err:
 	kfree(cal_block->cal_info);
+	cal_block->cal_info = NULL;
 	kfree(cal_block->client_info);
+	cal_block->client_info = NULL;
 	kfree(cal_block);
 	cal_block = NULL;
 	return cal_block;

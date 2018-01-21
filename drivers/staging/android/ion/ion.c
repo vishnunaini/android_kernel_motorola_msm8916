@@ -3,7 +3,7 @@
  * drivers/gpu/ion/ion.c
  *
  * Copyright (C) 2011 Google, Inc.
- * Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014,2017, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -473,7 +473,7 @@ static struct ion_handle *pass_to_user(struct ion_handle *handle)
 /* Must hold the client lock */
 static int user_ion_handle_put_nolock(struct ion_handle *handle)
 {
-	int ret;
+	int ret = 0;
 
 	if (--handle->user_ref_count == 0)
 		ret = ion_handle_put_nolock(handle);
@@ -2011,7 +2011,7 @@ static int ion_debug_allbufs_show(struct seq_file *s, void *unused)
 		int refs_found = 0;
 		int clients_busy = 0;
 
-		seq_printf(s, "%16.s %16p %12.x %12.d %20.s    %s",
+		seq_printf(s, "%16.s %16pK %12.x %12.d %20.s    %s",
 			buf->heap->name, buf, (int)buf->size,
 			buf_refcount, buf->alloc_client_name, "");
 

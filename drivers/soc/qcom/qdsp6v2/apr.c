@@ -354,7 +354,6 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 			if (is_modem_up) {
 				pr_err("%s: modem shutdown \
 					due to SSR, return", __func__);
-				return NULL;
 			}
 			pr_debug("%s: Wait for modem to bootup\n", __func__);
 			rc = apr_wait_for_device_up(APR_DEST_MODEM);
@@ -691,6 +690,7 @@ void dispatch_event(unsigned long code, uint16_t proc)
 	uint16_t clnt;
 	int i, j;
 
+	memset(&data, 0, sizeof(data));
 	data.opcode = RESET_EVENTS;
 	data.reset_event = code;
 

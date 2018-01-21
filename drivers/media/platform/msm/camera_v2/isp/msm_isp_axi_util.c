@@ -492,8 +492,13 @@ void msm_isp_sof_notify(struct vfe_device *vfe_dev,
 	struct msm_isp_event_data sof_event;
 	switch (frame_src) {
 	case VFE_PIX_0:
-		ISP_DBG("%s: PIX0 frame id: %u\n", __func__,
-			vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id);
+		if (vfe_dev->isp_sof_debug < 5)
+			pr_err("%s: PIX0 frame id: %u\n", __func__,
+				vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id);
+		else
+			ISP_DBG("%s: PIX0 frame id: %u\n", __func__,
+				vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id);
+		vfe_dev->isp_sof_debug++;
 		vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id++;
 		if (vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id == 0)
 			vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id = 1;
@@ -580,6 +585,7 @@ void msm_isp_calculate_bandwidth(
 	struct msm_vfe_axi_shared_data *axi_data,
 	struct msm_vfe_axi_stream *stream_info)
 {
+	int bpp = 0;
 	if (stream_info->stream_src < RDI_INTF_0) {
 		stream_info->bandwidth =
 			(axi_data->src_info[VFE_PIX_0].pixel_clock /
@@ -589,11 +595,12 @@ void msm_isp_calculate_bandwidth(
 			stream_info->format_factor / ISP_Q2;
 	} else {
 		int rdi = SRC_TO_INTF(stream_info->stream_src);
+		bpp = msm_isp_get_bit_per_pixel(stream_info->output_format);
 		if (rdi < VFE_SRC_MAX)
 			/*Need to consider the bits per pixel of sensor output
 			while calculating the bandwidth*/
 			stream_info->bandwidth =
-				(axi_data->src_info[rdi].pixel_clock * 10)/8;
+				(axi_data->src_info[rdi].pixel_clock / 8) * bpp;
 		else
 			pr_err("%s: Invalid rdi interface\n", __func__);
 	}
@@ -705,9 +712,8 @@ int msm_isp_request_axi_stream(struct vfe_device *vfe_dev, void *arg)
 	}
 
 	msm_isp_calculate_framedrop(&vfe_dev->axi_data, stream_cfg_cmd);
-	stream_info->vt_enable = stream_cfg_cmd->vt_enable;
-	if (stream_info->vt_enable) {
-		vfe_dev->vt_enable = stream_info->vt_enable;
+	if (stream_cfg_cmd->vt_enable && !vfe_dev->vt_enable) {
+		vfe_dev->vt_enable = stream_cfg_cmd->vt_enable;
 		msm_isp_start_avtimer();
 	}
 	if (stream_info->num_planes > 1) {
@@ -957,7 +963,7 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 {
 	int i, rc = -1;
 	struct msm_isp_buffer *buf = NULL;
-	uint32_t bufq_handle = 0;
+	uint32_t bufq_handle = 0, frame_id = 0;
 	uint32_t stream_idx = HANDLE_TO_IDX(stream_info->stream_handle);
 
 	if (stream_idx >= MAX_NUM_STREAM) {
@@ -967,6 +973,18 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 
 	if (stream_info->controllable_output && !stream_info->request_frm_num)
 		return 0;
+
+	frame_id = vfe_dev->axi_data.
+		src_info[SRC_TO_INTF(stream_info->stream_src)].frame_id;
+	if (frame_id && stream_info->frame_id &&
+		stream_info->frame_id == frame_id) {
+		/* This could happen if reg update ack is delayed */
+		pr_err("%s: Duplicate frame streamId:%d stream_fid:%d frame_id:%d\n",
+			__func__, stream_info->stream_id, stream_info->frame_id,
+			frame_id);
+		vfe_dev->error_info.stream_framedrop_count[stream_idx]++;
+		return rc;
+	}
 
 	bufq_handle = stream_info->bufq_handle;
 	if (SRC_TO_INTF(stream_info->stream_src) < VFE_SRC_MAX)
@@ -1236,7 +1254,7 @@ static uint8_t msm_isp_get_curr_stream_cnt(
 
 /*Factor in Q2 format*/
 #define ISP_DEFAULT_FORMAT_FACTOR 6
-#define ISP_BUS_UTILIZATION_FACTOR 6
+#define ISP_BUS_UTILIZATION_FACTOR 1536 /* 1.5 in Q10 format */
 static int msm_isp_update_stream_bandwidth(struct vfe_device *vfe_dev)
 {
 	int i, rc = 0;
@@ -1247,6 +1265,7 @@ static int msm_isp_update_stream_bandwidth(struct vfe_device *vfe_dev)
 	uint32_t num_rdi_streams = 0;
 	uint32_t total_streams   = 0;
 	uint64_t total_bandwidth = 0;
+	uint32_t bus_util_factor = ISP_BUS_UTILIZATION_FACTOR;
 
 	for (i = 0; i < MAX_NUM_STREAM; i++) {
 		stream_info = &axi_data->stream_info[i];
@@ -1263,14 +1282,18 @@ static int msm_isp_update_stream_bandwidth(struct vfe_device *vfe_dev)
 	}
 	total_bandwidth = total_pix_bandwidth + total_rdi_bandwidth;
 	total_streams = num_pix_streams + num_rdi_streams;
+	if (vfe_dev->bus_util_factor)
+		bus_util_factor = vfe_dev->bus_util_factor;
+	ISP_DBG("%s: bus_util_factor = %u\n", __func__, bus_util_factor);
+
 	if (total_streams == 1)
 		rc = msm_isp_update_bandwidth(ISP_VFE0 + vfe_dev->pdev->id,
 		total_bandwidth ,
-		(total_bandwidth * ISP_BUS_UTILIZATION_FACTOR / ISP_Q2));
+		(total_bandwidth * bus_util_factor / ISP_Q10));
 	else
 		rc = msm_isp_update_bandwidth(ISP_VFE0 + vfe_dev->pdev->id,
 		(total_bandwidth + MSM_ISP_MIN_AB),  (total_bandwidth *
-		ISP_BUS_UTILIZATION_FACTOR / ISP_Q2 + MSM_ISP_MIN_IB));
+		bus_util_factor / ISP_Q10 + MSM_ISP_MIN_IB));
 	if (rc < 0)
 		pr_err("%s: update failed\n", __func__);
 
@@ -1505,6 +1528,7 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev,
 	uint32_t wm_reload_mask = 0x0;
 	struct msm_vfe_axi_stream *stream_info;
 	struct msm_vfe_axi_shared_data *axi_data = &vfe_dev->axi_data;
+	uint8_t init_frm_drop = 0;
 
 	if (stream_cfg_cmd->num_streams > MAX_NUM_STREAM)
 		return -EINVAL;
@@ -1526,6 +1550,7 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev,
 
 		msm_isp_calculate_bandwidth(axi_data, stream_info);
 		msm_isp_reset_framedrop(vfe_dev, stream_info);
+		init_frm_drop = stream_info->init_frame_drop;
 		msm_isp_get_stream_wm_mask(stream_info, &wm_reload_mask);
 		rc = msm_isp_init_stream_ping_pong_reg(vfe_dev, stream_info);
 		if (rc < 0) {
@@ -1565,12 +1590,13 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev,
 		vfe_dev->hw_info->vfe_ops.core_ops.
 			update_camif_state(vfe_dev, camif_update);
 	}
+
 	if (vfe_dev->axi_data.src_info[VFE_RAW_0].raw_stream_count > 0)
-		vfe_dev->axi_data.src_info[VFE_RAW_0].frame_id = 0;
-	else if (vfe_dev->axi_data.src_info[VFE_RAW_1].raw_stream_count > 0)
-		vfe_dev->axi_data.src_info[VFE_RAW_1].frame_id = 0;
-	else if (vfe_dev->axi_data.src_info[VFE_RAW_2].raw_stream_count > 0)
-		vfe_dev->axi_data.src_info[VFE_RAW_2].frame_id = 0;
+		vfe_dev->axi_data.src_info[VFE_RAW_0].frame_id = init_frm_drop;
+	if (vfe_dev->axi_data.src_info[VFE_RAW_1].raw_stream_count > 0)
+		vfe_dev->axi_data.src_info[VFE_RAW_1].frame_id = init_frm_drop;
+	if (vfe_dev->axi_data.src_info[VFE_RAW_2].raw_stream_count > 0)
+		vfe_dev->axi_data.src_info[VFE_RAW_2].frame_id = init_frm_drop;
 
 	if (wait_for_complete) {
 		vfe_dev->axi_data.stream_update = stream_cfg_cmd->num_streams;
@@ -1917,7 +1943,7 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 	struct msm_vfe_axi_stream *stream_info;
 	struct msm_vfe_axi_composite_info *comp_info;
 	struct msm_vfe_axi_shared_data *axi_data = &vfe_dev->axi_data;
-	uint32_t pingpong_bit = 0;
+	uint32_t pingpong_bit = 0, frame_id = 0;
 
 	comp_mask = vfe_dev->hw_info->vfe_ops.axi_ops.
 		get_comp_mask(irq_status0, irq_status1);
@@ -1929,7 +1955,8 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 	ISP_DBG("%s: status: 0x%x\n", __func__, irq_status0);
 	pingpong_status =
 		vfe_dev->hw_info->vfe_ops.axi_ops.get_pingpong_status(vfe_dev);
-
+	frame_id = vfe_dev->axi_data.
+		src_info[SRC_TO_INTF(stream_info->stream_src)].frame_id;
 	for (i = 0; i < axi_data->hw_info->num_comp_mask; i++) {
 		rc = 0;
 		comp_info = &axi_data->composite_info[i];
@@ -1944,10 +1971,6 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 					HANDLE_TO_IDX(comp_info->stream_handle);
 				stream_info =
 					&axi_data->stream_info[stream_idx];
-				ISP_DBG("%s: stream id %x frame id: 0x%x\n",
-					__func__, stream_info->stream_id,
-					stream_info->frame_id);
-				stream_info->frame_id++;
 
 				pingpong_bit = (~(pingpong_status >>
 					stream_info->wm[0]) & 0x1);
@@ -1967,6 +1990,10 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 							pingpong_status,
 							pingpong_bit);
 				}
+				stream_info->frame_id = frame_id;
+				ISP_DBG("%s: stream id:%d frame id:%d\n",
+					__func__, stream_info->stream_id,
+					stream_info->frame_id);
 				if (done_buf && !rc)
 					msm_isp_process_done_buf(vfe_dev,
 					stream_info, done_buf, ts);
@@ -1985,10 +2012,6 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 				continue;
 			}
 			stream_info = &axi_data->stream_info[stream_idx];
-			ISP_DBG("%s: stream id %x frame id: 0x%x\n",
-				__func__,
-				stream_info->stream_id, stream_info->frame_id);
-			stream_info->frame_id++;
 
 			pingpong_bit = (~(pingpong_status >>
 				stream_info->wm[0]) & 0x1);
@@ -2004,6 +2027,10 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 					stream_info, pingpong_status,
 					pingpong_bit);
 			}
+			stream_info->frame_id = frame_id;
+			ISP_DBG("%s: stream id:%d frame id:%d\n",
+				__func__, stream_info->stream_id,
+				stream_info->frame_id);
 			if (done_buf && !rc)
 				msm_isp_process_done_buf(vfe_dev,
 				stream_info, done_buf, ts);
